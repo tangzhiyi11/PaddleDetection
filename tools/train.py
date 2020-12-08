@@ -91,7 +91,10 @@ def main():
         device_id = int(env['FLAGS_selected_gpus'])
     else:
         device_id = 0
-    place = fluid.CUDAPlace(device_id) if cfg.use_gpu else fluid.CPUPlace()
+    if FLAGS.use_xpu:
+        place = fluid.XPUPlace(int(os.environ.get("FLAGS_selected_xpus", "0")))
+    else:
+        place = fluid.CUDAPlace(device_id) if cfg.use_gpu else fluid.CPUPlace()
     exe = fluid.Executor(place)
 
     lr_builder = create('LearningRate')
@@ -180,13 +183,19 @@ def main():
         exec_strategy.num_threads = 1
 
     exe.run(startup_prog)
-    compiled_train_prog = fluid.CompiledProgram(train_prog).with_data_parallel(
-        loss_name=loss.name,
-        build_strategy=build_strategy,
-        exec_strategy=exec_strategy)
+    if FLAGS.use_xpu:
+        compiled_train_prog = train_prog
+    else:
+        compiled_train_prog = fluid.CompiledProgram(train_prog).with_data_parallel(
+            loss_name=loss.name,
+            build_strategy=build_strategy,
+            exec_strategy=exec_strategy)
 
     if FLAGS.eval:
-        compiled_eval_prog = fluid.CompiledProgram(eval_prog)
+        if FLAGS.use_xpu:
+            compiled_eval_prog = eval_prog
+        else:
+            compiled_eval_prog = fluid.CompiledProgram(eval_prog)
 
     fuse_bn = getattr(model.backbone, 'norm_type', None) == 'affine_channel'
 
@@ -361,6 +370,11 @@ if __name__ == '__main__':
         default=False,
         help="If set True, enable continuous evaluation job."
         "This flag is only used for internal test.")
+    parser.add_argument(
+        "--use_xpu",
+        type=bool,
+        default=False,
+        help="whether to use xpu.")
 
     #NOTE:args for profiler tools, used for benchmark
     parser.add_argument(

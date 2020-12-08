@@ -57,7 +57,10 @@ def main():
     multi_scale_test = getattr(cfg, 'MultiScaleTEST', None)
 
     # define executor
-    place = fluid.CUDAPlace(0) if cfg.use_gpu else fluid.CPUPlace()
+    if FLAGS.use_xpu:
+        place = fluid.XPUPlace(int(os.environ.get("FLAGS_selected_xpus", "0")))
+    else:
+        place = fluid.CUDAPlace(device_id) if cfg.use_gpu else fluid.CPUPlace()
     exe = fluid.Executor(place)
 
     # build program
@@ -90,7 +93,10 @@ def main():
             cfg.metric, json_directory=FLAGS.output_eval, dataset=dataset)
         return
 
-    compile_program = fluid.CompiledProgram(eval_prog).with_data_parallel()
+    if FLAGS.use_xpu:
+        compile_program = eval_prog
+    else:
+        compile_program = fluid.CompiledProgram(eval_prog).with_data_parallel()
 
     assert cfg.metric != 'OID', "eval process of OID dataset \
                           is not supported."
@@ -175,5 +181,10 @@ if __name__ == '__main__':
         default=None,
         type=str,
         help="Evaluation file directory, default is current directory.")
+    parser.add_argument(
+        "--use_xpu",
+        type=bool,
+        default=False,
+        help="whether to use xpu.")
     FLAGS = parser.parse_args()
     main()

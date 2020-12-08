@@ -1,0 +1,282 @@
+architecture: YOLOv3
+use_gpu: false
+use_xpu: true
+max_iters: 2000
+log_iter: 1
+save_dir: output
+snapshot_iter: 200
+metric: VOC
+pretrain_weights: https://paddlemodels.bj.bcebos.com/object_detection/ppyolo.pdparams
+weights: output/ppyolo_roadsign/model_final
+num_classes: 4
+finetune_exclude_pretrained_params: ['yolo_output']
+use_fine_grained_loss: true
+use_ema: true
+ema_decay: 0.9998
+
+YOLOv3:
+  backbone: ResNet
+  yolo_head: YOLOv3Head
+  use_fine_grained_loss: true
+
+ResNet:
+  norm_type: 'bn'
+  freeze_at: 0
+  freeze_norm: false
+  norm_decay: 0.
+  depth: 50
+  feature_maps: [3, 4, 5]
+  variant: d
+  dcn_v2_stages: [5]
+
+YOLOv3Head:
+  anchor_masks: [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
+  anchors: [[10, 13], [16, 30], [33, 23],
+            [30, 61], [62, 45], [59, 119],
+            [116, 90], [156, 198], [373, 326]]
+  norm_decay: 0.
+  coord_conv: true
+  iou_aware: true
+  iou_aware_factor: 0.4
+  scale_x_y: 1.05
+  spp: true
+  yolo_loss: YOLOv3Loss
+  nms: MatrixNMS
+  drop_block: true
+
+YOLOv3Loss:
+  ignore_thresh: 0.7
+  scale_x_y: 1.05
+  label_smooth: false
+  use_fine_grained_loss: true
+  iou_loss: IouLoss
+  iou_aware_loss: IouAwareLoss
+
+IouLoss:
+  loss_weight: 2.5
+  max_height: 608
+  max_width: 608
+
+IouAwareLoss:
+  loss_weight: 1.0
+  max_height: 608
+  max_width: 608
+
+MatrixNMS:
+    background_label: -1
+    keep_top_k: 100
+    normalized: false
+    score_threshold: 0.01
+    post_threshold: 0.01
+
+LearningRate:
+  base_lr: 0.0001
+  schedulers:
+  - !PiecewiseDecay
+    gamma: 0.1
+    milestones:
+    - 800
+    - 110
+  - !LinearWarmup
+    start_factor: 0.33333333333
+    steps: 100
+
+OptimizerBuilder:
+  optimizer:
+    momentum: 0.9
+    type: Momentum
+  regularizer:
+    factor: 0.0005
+    type: L2
+
+#####################################数据配置#####################################
+
+# 模型训练集设置参考
+# 训练、验证、测试使用的数据配置主要区别在数据路径、模型输入、数据增强参数设置
+# 如果使用 yolov3_reader.yml，下面的参数设置优先级高，会覆盖yolov3_reader.yml中的参数设置。
+# _READER_: 'yolov3_reader.yml'
+
+TrainReader:
+  # 训练过程中模型的输入设置
+  # 包括图片，图片长宽高等基本信息，图片id，标记的目标框，类别等信息
+  inputs_def:
+    fields: ['image', 'gt_bbox', 'gt_class', 'gt_score']
+    # num_max_boxes，每个样本的groud truth的最多保留个数，若不够用0填充。
+    num_max_boxes: 50
+  # 训练数据集路径
+  dataset:
+    # 指定数据集格式
+    !VOCDataSet
+      #dataset/xxx/
+      #├── annotations
+      #│   ├── xxx1.xml
+      #│   ├── xxx2.xml
+      #│   ├── xxx3.xml
+      #│   |   ...
+      #├── images
+      #│   ├── xxx1.png
+      #│   ├── xxx2.png
+      #│   ├── xxx3.png
+      #│   |   ...
+      #├── label_list.txt (用户自定义必须提供，且文件名称必须是label_list.txt。当使用VOC数据且use_default_label=true时，可不提供 )
+      #├── train.txt (训练数据集文件列表, ./images/xxx1.png ./Annotations/xxx1.xml)
+      #└── valid.txt (测试数据集文件列表)
+      # 图片文件夹相对路径，路径是相对于dataset_dir，图像路径= dataset_dir + image_dir + image_name
+      dataset_dir: dataset/roadsign_voc
+      # 标记文件名
+      anno_path: train.txt
+      # 是否包含背景类，若with_background=true，num_classes需要+1
+      # YOLO 系列with_background必须是false，FasterRCNN系列是true ###
+      with_background: false
+  sample_transforms:
+    # 读取Image图像为numpy数组
+    # 可以选择将图片从BGR转到RGB，可以选择对一个batch中的图片做mixup增强
+    - !DecodeImage
+      to_rgb: True
+      with_mixup: True
+    # MixupImage
+    - !MixupImage
+      alpha: 1.5
+      beta: 1.5
+    # ColorDistort
+    - !ColorDistort {}
+    # RandomExpand
+    - !RandomExpand
+      fill_value: [123.675, 116.28, 103.53]
+      # 随机扩充比例，默认值是4.0
+      ratio: 1.5
+    - !RandomCrop {}
+    - !RandomFlipImage
+      is_normalized: false
+     # 归一化坐标
+    - !NormalizeBox {}
+    # 如果 bboxes 数量小于 num_max_boxes，填充值为0的 box
+    - !PadBox
+      num_max_boxes: 50
+    # 坐标格式转化，从XYXY转成XYWH格式
+    - !BboxXYXY2XYWH {}
+  # 以下是对一个batch中的所有图片同时做的数据处理
+  batch_transforms:
+  # 多尺度训练时，从list中随机选择一个尺寸，对一个batch数据同时同时resize
+  - !RandomShape
+    sizes: [320]
+    random_inter: True
+  # NormalizeImage
+  - !NormalizeImage
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+    is_scale: True
+    is_channel_first: false
+  - !Permute
+    to_bgr: false
+    channel_first: True
+  # Gt2YoloTarget is only used when use_fine_grained_loss set as true,
+  # this operator will be deleted automatically if use_fine_grained_loss
+  # is set as false
+  - !Gt2YoloTarget
+    anchor_masks: [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
+    anchors: [[10, 13], [16, 30], [33, 23],
+              [30, 61], [62, 45], [59, 119],
+              [116, 90], [156, 198], [373, 326]]
+    downsample_ratios: [32, 16, 8]
+  # 1个GPU的batch size，默认为1。需要注意：每个iter迭代会运行batch_size * device_num张图片
+  batch_size: 4
+  # 是否shuffle
+  shuffle: true
+  # mixup，-1表示不做Mixup数据增强。注意，这里是epoch为单位
+  mixup_epoch: 250
+  # 注意，在某些情况下，drop_last=false时训练过程中可能会出错，建议训练时都设置为true
+  drop_last: true
+  # 若选用多进程，设置使用多进程/线程的数目
+  # 开启多进程后，占用内存会成倍增加，根据内存设置###
+  worker_num: 2
+  # 共享内存bufsize。注意，缓存是以batch为单位，缓存的样本数据总量为batch_size * bufsize，所以请注意不要设置太大，请根据您的硬件设置。
+  bufsize: 2
+  # 是否使用多进程
+  use_process: false #true
+
+
+EvalReader:
+  # 评估过程中模型的输入设置
+  # 包括图片，图片长宽高等基本信息，图片id，标记的目标框，类别等信息
+  inputs_def:
+    fields: ['image', 'im_size', 'im_id', 'gt_bbox', 'gt_class', 'is_difficult']
+    # num_max_boxes，每个样本的groud truth的最多保留个数，若不够用0填充。
+    num_max_boxes: 50
+  # 数据集路径
+  dataset:
+    !VOCDataSet
+      # 图片文件夹相对路径，路径是相对于dataset_dir，图像路径= dataset_dir + image_dir + image_name
+      dataset_dir: dataset/roadsign_voc
+      # 评估文件列表
+      anno_path: valid.txt
+      # 是否包含背景类，若with_background=true，num_classes需要+1
+      # YOLO 系列with_background必须是false，FasterRCNN系列是true ###
+      with_background: false
+  sample_transforms:
+    # 读取Image图像为numpy数组
+    # 可以选择将图片从BGR转到RGB，可以选择对一个batch中的图片做mixup增强
+    - !DecodeImage
+      to_rgb: True
+    # ResizeImage
+    - !ResizeImage
+      target_size: 608
+      interp: 2
+    # NormalizeImage
+    - !NormalizeImage
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+      is_scale: True
+      is_channel_first: false
+    # 如果 bboxes 数量小于 num_max_boxes，填充值为0的 box
+    - !PadBox
+      num_max_boxes: 50
+    - !Permute
+      to_bgr: false
+      channel_first: True
+  # 1个GPU的batch size，默认为1。需要注意：每个iter迭代会运行batch_size * device_num张图片
+  batch_size: 1
+  # drop_empty
+  drop_empty: false
+  # 若选用多进程，设置使用多进程/线程的数目
+  # 开启多进程后，占用内存会成倍增加，根据内存设置###
+  worker_num: 4
+  # 共享内存bufsize。注意，缓存是以batch为单位，缓存的样本数据总量为batch_size * bufsize，所以请注意不要设置太大，请根据您的硬件设置。
+  bufsize: 2
+
+TestReader:
+  # 预测过程中模型的输入设置
+  # 包括图片，图片长宽高等基本信息，图片id，标记的目标框，类别等信息
+  inputs_def:
+    # 预测图像输入尺寸
+    image_shape: [3, 608, 608]
+    fields: ['image', 'im_size', 'im_id']
+  # 数据集路径
+  dataset:
+    # 预测数据
+    !ImageFolder
+      # anno_path
+      anno_path: dataset/roadsign_voc/label_list.txt
+      # 是否包含背景类，若with_background=true，num_classes需要+1
+      # YOLO 系列with_background必须是false，FasterRCNN系列是true ###
+      with_background: false
+  sample_transforms:
+    - !DecodeImage
+      to_rgb: True
+    # ResizeImage
+    - !ResizeImage
+      # 注意与上面图像尺寸保持一致
+      target_size: 608
+      interp: 2
+    # NormalizeImage
+    - !NormalizeImage
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+      is_scale: True
+      is_channel_first: false
+    # Permute
+    - !Permute
+      to_bgr: false
+      channel_first: True
+  # 1个GPU的batch size，默认为1
+  batch_size: 1
